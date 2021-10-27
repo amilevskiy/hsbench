@@ -825,8 +825,8 @@ NOTES:
     "mk" flag, but it's likely that any values above 1000 will be ignored.
 `
 	myflag.Usage = func() {
-		fmt.Fprintln(flag.CommandLine.Output(), "\nUSAGE:", os.Args[0], "[OPTIONS]\n")
-		fmt.Fprintln(flag.CommandLine.Output(), "OPTIONS:")
+		fmt.Fprintln(flag.CommandLine.Output(), "\nUSAGE:", os.Args[0], "[OPTIONS]")
+		fmt.Fprintln(flag.CommandLine.Output(), "\nOPTIONS:")
 		myflag.PrintDefaults()
 		fmt.Fprint(flag.CommandLine.Output(), notes)
 	}
