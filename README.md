@@ -37,7 +37,7 @@ To leverage this tool, the following prerequisites apply:
 The easiest way to install hsbench is to use go's built in github support:
 
 ```
-go get github.com/vitalif/hsbench
+go get github.com/amilevskiy/hsbench
 ```
 
 Then just use `~/go/bin/hsbench`.
@@ -45,7 +45,7 @@ Then just use `~/go/bin/hsbench`.
 If you want to patch and rebuild it, run `go build` or `go install` in the hsbench src directory:
 
 ```
-$ cd ~/go/src/github.com/vitalif/hsbench
+$ cd ~/go/src/github.com/amilevskiy/hsbench
 $ go build
 ```
 

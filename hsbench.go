@@ -6,26 +6,16 @@ package main
 
 import (
 	"bytes"
-	"code.cloudfoundry.org/bytefmt"
-	"crypto/hmac"
 	"crypto/md5"
-	"crypto/sha1"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"io"
 	"log"
 	"math"
 	"math/rand"
-	"net"
-	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -33,106 +23,27 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"code.cloudfoundry.org/bytefmt"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 )
 
+const modeString = "cxiplgd"
+
 // Global variables
-var access_key, secret_key, url_host, bucket_prefix, bucket_list, object_prefix, region, modes, output, json_output, sizeArg string
+var accessKey, secretSey, urlHost, bucketPrefix, bucketList, objectPrefix, region, modes, output, jsonOutput, sizeArg string
 var buckets []string
-var duration_secs, threads, loops int
-var object_data []byte
-var object_data_md5 string
-var max_keys, running_threads, bucket_count, first_object, object_count, object_size, op_counter int64
-var object_count_flag bool
+var durationSecs, threads, loops int
+var objectData []byte
+var objectDataMd5 string
+var maxKeys, runningThreads, bucketCount, firstObject, objectCount, objectSize, opCounter int64
+var objectCountFlag bool
 var endtime time.Time
 var interval float64
-
-// Our HTTP transport used for the roundtripper below
-var HTTPTransport http.RoundTripper = &http.Transport{
-	Proxy: http.ProxyFromEnvironment,
-	Dial: (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).Dial,
-	TLSHandshakeTimeout:   10 * time.Second,
-	ExpectContinueTimeout: 0,
-	// Set the number of idle connections to 2X the number of threads 
-	MaxIdleConnsPerHost: 2*threads,
-	MaxIdleConns:        2*threads,
-	// But limit their idle time to 1 minute
-	IdleConnTimeout: time.Minute,
-	// Ignore TLS errors
-	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-}
-
-var httpClient = &http.Client{Transport: HTTPTransport}
-
-func getS3Client() *s3.S3 {
-	// Build our config
-	creds := credentials.NewStaticCredentials(access_key, secret_key, "")
-	loglevel := aws.LogOff
-	// Build the rest of the configuration
-	awsConfig := &aws.Config{
-		Region:               aws.String(region),
-		Endpoint:             aws.String(url_host),
-		Credentials:          creds,
-		LogLevel:             &loglevel,
-		S3ForcePathStyle:     aws.Bool(true),
-		S3Disable100Continue: aws.Bool(true),
-		// Comment following to use default transport
-		HTTPClient: &http.Client{Transport: HTTPTransport},
-	}
-	session := session.New(awsConfig)
-	client := s3.New(session)
-	if client == nil {
-		log.Fatalf("FATAL: Unable to create new client.")
-	}
-	// Return success
-	return client
-}
-
-// canonicalAmzHeaders -- return the x-amz headers canonicalized
-func canonicalAmzHeaders(req *http.Request) string {
-	// Parse out all x-amz headers
-	var headers []string
-	for header := range req.Header {
-		norm := strings.ToLower(strings.TrimSpace(header))
-		if strings.HasPrefix(norm, "x-amz") {
-			headers = append(headers, norm)
-		}
-	}
-	// Put them in sorted order
-	sort.Strings(headers)
-	// Now add back the values
-	for n, header := range headers {
-		headers[n] = header + ":" + strings.Replace(req.Header.Get(header), "\n", " ", -1)
-	}
-	// Finally, put them back together
-	if len(headers) > 0 {
-		return strings.Join(headers, "\n") + "\n"
-	} else {
-		return ""
-	}
-}
-
-func hmacSHA1(key []byte, content string) []byte {
-	mac := hmac.New(sha1.New, key)
-	mac.Write([]byte(content))
-	return mac.Sum(nil)
-}
-
-func setSignature(req *http.Request) {
-	// Setup default parameters
-	dateHdr := time.Now().UTC().Format("20060102T150405Z")
-	req.Header.Set("X-Amz-Date", dateHdr)
-	// Get the canonical resource and header
-	canonicalResource := req.URL.EscapedPath()
-	canonicalHeaders := canonicalAmzHeaders(req)
-	stringToSign := req.Method + "\n" + req.Header.Get("Content-MD5") + "\n" + req.Header.Get("Content-Type") + "\n\n" +
-		canonicalHeaders + canonicalResource
-	hash := hmacSHA1([]byte(secret_key), stringToSign)
-	signature := base64.StdEncoding.EncodeToString(hash)
-	req.Header.Set("Authorization", fmt.Sprintf("AWS %s:%s", access_key, signature))
-}
+var version string = "development"
 
 type IntervalStats struct {
 	loop         int
@@ -213,9 +124,9 @@ func (o *OutputStats) log() {
 		o.Slowdowns)
 }
 
-func (o *OutputStats) csv_header(w *csv.Writer) {
+func (o *OutputStats) csvHeader(w *csv.Writer) {
 	if w == nil {
-		log.Fatal("OutputStats passed nil CSV writer")
+		log.Fatalln("OutputStats passed nil CSV writer")
 	}
 
 	s := []string{
@@ -232,13 +143,13 @@ func (o *OutputStats) csv_header(w *csv.Writer) {
 		"Slowdowns"}
 
 	if err := w.Write(s); err != nil {
-		log.Fatal("Error writing to CSV writer: ", err)
+		log.Fatalln("Error writing to CSV writer:", err)
 	}
 }
 
 func (o *OutputStats) csv(w *csv.Writer) {
 	if w == nil {
-		log.Fatal("OutputStats Passed nil csv writer")
+		log.Fatalln("OutputStats passed nil CSV writer")
 	}
 
 	s := []string{
@@ -256,22 +167,22 @@ func (o *OutputStats) csv(w *csv.Writer) {
 		strconv.FormatInt(o.Slowdowns, 10)}
 
 	if err := w.Write(s); err != nil {
-		log.Fatal("Error writing to CSV writer: ", err)
+		log.Fatalln("Error writing to CSV writer:", err)
 	}
 }
 
 func (o *OutputStats) json(jfile *os.File) {
 	if jfile == nil {
-		log.Fatal("OutputStats passed nil JSON file")
+		log.Fatalln("OutputStats passed nil JSON file")
 	}
 	jdata, err := json.Marshal(o)
 	if err != nil {
-		log.Fatal("Error marshaling JSON: ", err)
+		log.Fatalln("Error marshaling JSON:", err)
 	}
 	log.Println(string(jdata))
 	_, err = jfile.WriteString(string(jdata) + "\n")
 	if err != nil {
-		log.Fatal("Error writing to JSON file: ", err)
+		log.Fatalln("Error writing to JSON file:", err)
 	}
 }
 
@@ -415,9 +326,9 @@ func (stats *Stats) makeTotalStats() (OutputStats, bool) {
 }
 
 // Only safe to call from the calling thread
-func (stats *Stats) updateIntervals(thread_num int) int64 {
-	curInterval := stats.threadStats[thread_num].curInterval
-	newInterval := stats.threadStats[thread_num].updateIntervals(stats.loop, stats.mode, stats.intervalNano)
+func (stats *Stats) updateIntervals(threadNum int) int64 {
+	curInterval := stats.threadStats[threadNum].curInterval
+	newInterval := stats.threadStats[threadNum].updateIntervals(stats.loop, stats.mode, stats.intervalNano)
 
 	// Finish has already been called
 	if curInterval < 0 {
@@ -443,50 +354,50 @@ func (stats *Stats) updateIntervals(thread_num int) int64 {
 	return newInterval
 }
 
-func (stats *Stats) addOp(thread_num int, bytes int64, latNano int64) {
+func (stats *Stats) addOp(threadNum int, bytes int64, latNano int64) {
 
 	// Interval statistics
-	cur := stats.threadStats[thread_num].curInterval
+	cur := stats.threadStats[threadNum].curInterval
 	if cur < 0 {
 		return
 	}
-	stats.threadStats[thread_num].intervals[cur].bytes += bytes
-	stats.threadStats[thread_num].intervals[cur].latNano =
-		append(stats.threadStats[thread_num].intervals[cur].latNano, latNano)
+	stats.threadStats[threadNum].intervals[cur].bytes += bytes
+	stats.threadStats[threadNum].intervals[cur].latNano =
+		append(stats.threadStats[threadNum].intervals[cur].latNano, latNano)
 }
 
-func (stats *Stats) addSlowDown(thread_num int) {
-	cur := stats.threadStats[thread_num].curInterval
-	stats.threadStats[thread_num].intervals[cur].slowdowns++
+func (stats *Stats) addSlowDown(threadNum int) {
+	cur := stats.threadStats[threadNum].curInterval
+	stats.threadStats[threadNum].intervals[cur].slowdowns++
 }
 
-func (stats *Stats) finish(thread_num int) {
-	stats.updateIntervals(thread_num)
-	stats.threadStats[thread_num].finish()
+func (stats *Stats) finish(threadNum int) {
+	stats.updateIntervals(threadNum)
+	stats.threadStats[threadNum].finish()
 	count := atomic.AddInt32(&stats.completions, 1)
 	if count == int32(stats.threads) {
 		stats.endNano = time.Now().UnixNano()
 	}
 }
 
-func runUpload(thread_num int, fendtime time.Time, stats *Stats) {
+func runUpload(threadNum int, fendtime time.Time, stats *Stats) {
 	errcnt := 0
 	svc := s3.New(session.New(), cfg)
 	for {
-		if duration_secs > -1 && time.Now().After(endtime) {
+		if durationSecs > -1 && time.Now().After(endtime) {
 			break
 		}
-		objnum := atomic.AddInt64(&op_counter, 1)
-		bucket_num := objnum % int64(bucket_count)
-		if object_count > -1 && objnum >= object_count {
-			objnum = atomic.AddInt64(&op_counter, -1)
+		objnum := atomic.AddInt64(&opCounter, 1)
+		bucketNum := objnum % int64(bucketCount)
+		if objectCount > -1 && objnum >= objectCount {
+			objnum = atomic.AddInt64(&opCounter, -1)
 			break
 		}
-		fileobj := bytes.NewReader(object_data)
+		fileobj := bytes.NewReader(objectData)
 
-		key := fmt.Sprintf("%s%012d", object_prefix, objnum)
+		key := fmt.Sprintf("%s%012d", objectPrefix, objnum)
 		r := &s3.PutObjectInput{
-			Bucket: &buckets[bucket_num],
+			Bucket: &buckets[bucketNum],
 			Key:    &key,
 			Body:   fileobj,
 		}
@@ -496,27 +407,27 @@ func runUpload(thread_num int, fendtime time.Time, stats *Stats) {
 		req.HTTPRequest.Header.Add("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
 		err := req.Send()
 		end := time.Now().UnixNano()
-		stats.updateIntervals(thread_num)
+		stats.updateIntervals(threadNum)
 
 		if err != nil {
 			errcnt++
-			stats.addSlowDown(thread_num)
-			atomic.AddInt64(&op_counter, -1)
-			log.Printf("upload err", err)
+			stats.addSlowDown(threadNum)
+			atomic.AddInt64(&opCounter, -1)
+			log.Print("upload error: ", err)
 		} else {
 			// Update the stats
-			stats.addOp(thread_num, object_size, end-start)
+			stats.addOp(threadNum, objectSize, end-start)
 		}
 		if errcnt > 2 {
 			break
 		}
 	}
-	stats.finish(thread_num)
-	atomic.AddInt64(&running_threads, -1)
+	stats.finish(threadNum)
+	atomic.AddInt64(&runningThreads, -1)
 }
 
 func readBody(r io.Reader) (int64, error) {
-	var bytesRead int64 = 0
+	var bytesRead int64
 	buf := make([]byte, 65536)
 	for {
 		n, err := r.Read(buf)
@@ -526,37 +437,36 @@ func readBody(r io.Reader) (int64, error) {
 		if err != nil {
 			if err == io.EOF {
 				return bytesRead, nil
-			} else {
-				return bytesRead, err
 			}
+			return bytesRead, err
 		}
 	}
 }
 
-func runDownload(thread_num int, fendtime time.Time, stats *Stats) {
+func runDownload(threadNum int, fendtime time.Time, stats *Stats) {
 	errcnt := 0
 	svc := s3.New(session.New(), cfg)
 	for {
-		if duration_secs > -1 && time.Now().After(endtime) {
+		if durationSecs > -1 && time.Now().After(endtime) {
 			break
 		}
 
 		var objnum int64
-		if object_count > -1 {
+		if objectCount > -1 {
 			// Run random download if the number of objects is known
-			objnum = rand.Int63() % object_count
+			objnum = rand.Int63() % objectCount
 		} else {
-			objnum = atomic.AddInt64(&op_counter, 1)
-			if object_count > -1 && objnum >= object_count {
-				atomic.AddInt64(&op_counter, -1)
+			objnum = atomic.AddInt64(&opCounter, 1)
+			if objectCount > -1 && objnum >= objectCount {
+				atomic.AddInt64(&opCounter, -1)
 				break
 			}
 		}
 
-		bucket_num := objnum % int64(bucket_count)
-		key := fmt.Sprintf("%s%012d", object_prefix, objnum)
+		bucketNum := objnum % int64(bucketCount)
+		key := fmt.Sprintf("%s%012d", objectPrefix, objnum)
 		r := &s3.GetObjectInput{
-			Bucket: &buckets[bucket_num],
+			Bucket: &buckets[bucketNum],
 			Key:    &key,
 		}
 
@@ -564,21 +474,21 @@ func runDownload(thread_num int, fendtime time.Time, stats *Stats) {
 		req, resp := svc.GetObjectRequest(r)
 		err := req.Send()
 		end := time.Now().UnixNano()
-		stats.updateIntervals(thread_num)
+		stats.updateIntervals(threadNum)
 		if err != nil {
 			errcnt++
-			stats.addSlowDown(thread_num)
-			log.Printf("download err", err)
+			stats.addSlowDown(threadNum)
+			log.Print("download error: ", err)
 		} else {
-			var bytesRead int64 = 0
+			var bytesRead int64
 			defer resp.Body.Close()
 			bytesRead, err := readBody(resp.Body)
 			// Update the stats
-			stats.addOp(thread_num, bytesRead, end-start)
+			stats.addOp(threadNum, bytesRead, end-start)
 			if err != nil {
 				errcnt++
-				stats.addSlowDown(thread_num)
-				log.Printf("download err", err)
+				stats.addSlowDown(threadNum)
+				log.Print("download error: ", err)
 			}
 		}
 		if errcnt > 2 {
@@ -586,30 +496,29 @@ func runDownload(thread_num int, fendtime time.Time, stats *Stats) {
 		}
 
 	}
-	stats.finish(thread_num)
-	atomic.AddInt64(&running_threads, -1)
+	stats.finish(threadNum)
+	atomic.AddInt64(&runningThreads, -1)
 }
 
-func runDelete(thread_num int, stats *Stats) {
+func runDelete(threadNum int, stats *Stats) {
 	errcnt := 0
 	svc := s3.New(session.New(), cfg)
-
 	for {
-		if duration_secs > -1 && time.Now().After(endtime) {
+		if durationSecs > -1 && time.Now().After(endtime) {
 			break
 		}
 
-		objnum := atomic.AddInt64(&op_counter, 1)
-		if object_count > -1 && objnum >= object_count {
-			atomic.AddInt64(&op_counter, -1)
+		objnum := atomic.AddInt64(&opCounter, 1)
+		if objectCount > -1 && objnum >= objectCount {
+			atomic.AddInt64(&opCounter, -1)
 			break
 		}
 
-		bucket_num := objnum % int64(bucket_count)
+		bucketNum := objnum % int64(bucketCount)
 
-		key := fmt.Sprintf("%s%012d", object_prefix, objnum)
+		key := fmt.Sprintf("%s%012d", objectPrefix, objnum)
 		r := &s3.DeleteObjectInput{
-			Bucket: &buckets[bucket_num],
+			Bucket: &buckets[bucketNum],
 			Key:    &key,
 		}
 
@@ -617,174 +526,177 @@ func runDelete(thread_num int, stats *Stats) {
 		req, out := svc.DeleteObjectRequest(r)
 		err := req.Send()
 		end := time.Now().UnixNano()
-		stats.updateIntervals(thread_num)
+		stats.updateIntervals(threadNum)
 
 		if err != nil {
 			errcnt++
-			stats.addSlowDown(thread_num)
-			log.Printf("delete err", err, "out", out.String())
+			stats.addSlowDown(threadNum)
+			log.Print("delete error: ", err, " out ", out.String())
 		} else {
 			// Update the stats
-			stats.addOp(thread_num, object_size, end-start)
+			stats.addOp(threadNum, objectSize, end-start)
 		}
 		if errcnt > 2 {
 			break
 		}
 	}
-	stats.finish(thread_num)
-	atomic.AddInt64(&running_threads, -1)
+	stats.finish(threadNum)
+	atomic.AddInt64(&runningThreads, -1)
 }
 
-func runBucketDelete(thread_num int, stats *Stats) {
+func runBucketDelete(threadNum int, stats *Stats) {
 	svc := s3.New(session.New(), cfg)
 
 	for {
-		bucket_num := atomic.AddInt64(&op_counter, 1)
-		if bucket_num >= bucket_count {
-			atomic.AddInt64(&op_counter, -1)
+		bucketNum := atomic.AddInt64(&opCounter, 1)
+		if bucketNum >= bucketCount {
+			atomic.AddInt64(&opCounter, -1)
 			break
 		}
 		r := &s3.DeleteBucketInput{
-			Bucket: &buckets[bucket_num],
+			Bucket: &buckets[bucketNum],
 		}
 
 		start := time.Now().UnixNano()
 		_, err := svc.DeleteBucket(r)
 		end := time.Now().UnixNano()
-		stats.updateIntervals(thread_num)
+		stats.updateIntervals(threadNum)
 
 		if err != nil {
 			break
 		}
-		stats.addOp(thread_num, 0, end-start)
+		stats.addOp(threadNum, 0, end-start)
 	}
-	stats.finish(thread_num)
-	atomic.AddInt64(&running_threads, -1)
+	stats.finish(threadNum)
+	atomic.AddInt64(&runningThreads, -1)
 }
 
-func runBucketList(thread_num int, stats *Stats) {
+func runBucketList(threadNum int, stats *Stats) {
 	svc := s3.New(session.New(), cfg)
 
 	marker := ""
-	bucket_num := rand.Int63() % bucket_count
+	bucketNum := rand.Int63() % bucketCount
 	for {
-		if duration_secs > -1 && time.Now().After(endtime) {
+		if durationSecs > -1 && time.Now().After(endtime) {
 			break
 		}
 
 		start := time.Now().UnixNano()
 		p, err := svc.ListObjects(&s3.ListObjectsInput{
-			Bucket: &buckets[bucket_num],
-			Marker: &marker,
-			MaxKeys: &max_keys,
+			Bucket:  &buckets[bucketNum],
+			Marker:  &marker,
+			MaxKeys: &maxKeys,
 		})
 		end := time.Now().UnixNano()
 
 		if err != nil {
 			break
 		}
-		stats.addOp(thread_num, 0, end-start)
-		stats.updateIntervals(thread_num)
+		stats.addOp(threadNum, 0, end-start)
+		stats.updateIntervals(threadNum)
 
 		if *p.IsTruncated {
 			marker = *p.NextMarker
 		} else {
 			marker = ""
-			bucket_num = rand.Int63() % bucket_count
+			bucketNum = rand.Int63() % bucketCount
 		}
 	}
-	stats.finish(thread_num)
-	atomic.AddInt64(&running_threads, -1)
+	stats.finish(threadNum)
+	atomic.AddInt64(&runningThreads, -1)
 }
 
 var cfg *aws.Config
 
-func runBucketsInit(thread_num int, stats *Stats) {
+func runBucketsInit(threadNum int, stats *Stats) {
 	svc := s3.New(session.New(), cfg)
 
 	for {
-		bucket_num := atomic.AddInt64(&op_counter, 1)
-		if bucket_num >= bucket_count {
-			atomic.AddInt64(&op_counter, -1)
+		bucketNum := atomic.AddInt64(&opCounter, 1)
+		if bucketNum >= bucketCount {
+			atomic.AddInt64(&opCounter, -1)
 			break
 		}
 		start := time.Now().UnixNano()
-		in := &s3.CreateBucketInput{Bucket: aws.String(buckets[bucket_num])}
+		in := &s3.CreateBucketInput{Bucket: aws.String(buckets[bucketNum])}
 		_, err := svc.CreateBucket(in)
 		end := time.Now().UnixNano()
-		stats.updateIntervals(thread_num)
+		stats.updateIntervals(threadNum)
 
 		if err != nil {
 			if !strings.Contains(err.Error(), s3.ErrCodeBucketAlreadyOwnedByYou) &&
 				!strings.Contains(err.Error(), "BucketAlreadyExists") {
-				log.Fatalf("FATAL: Unable to create bucket %s (is your access and secret correct?): %v", buckets[bucket_num], err)
+				log.Fatalf("FATAL: Unable to create bucket %s (is your access and secret correct?): %v\n", buckets[bucketNum], err)
 			}
 		}
-		stats.addOp(thread_num, 0, end-start)
+		stats.addOp(threadNum, 0, end-start)
 	}
-	stats.finish(thread_num)
-	atomic.AddInt64(&running_threads, -1)
+	stats.finish(threadNum)
+	atomic.AddInt64(&runningThreads, -1)
 }
 
 type pagedObject struct {
-	bucket_num int64
-	key string
-	size int64
+	bucketNum int64
+	key       string
+	size      int64
 }
 
-func runPagedList(wg *sync.WaitGroup, bucket_num int64, list chan<- pagedObject) {
+func runPagedList(wg *sync.WaitGroup, bucketNum int64, list chan<- pagedObject) {
 	svc := s3.New(session.New(), cfg)
-	svc.ListObjectsPages(
+	err := svc.ListObjectsPages(
 		&s3.ListObjectsInput{
-			Bucket: &buckets[bucket_num],
-			MaxKeys: &max_keys,
+			Bucket:  &buckets[bucketNum],
+			MaxKeys: &maxKeys,
 		},
 		func(page *s3.ListObjectsOutput, last bool) bool {
 			for _, v := range page.Contents {
 				list <- pagedObject{
-					bucket_num: bucket_num,
-					key: *v.Key,
-					size: *v.Size,
+					bucketNum: bucketNum,
+					key:       *v.Key,
+					size:      *v.Size,
 				}
 			}
 			return true
 		})
+	if err != nil {
+		log.Print("s3.ListObjectsPages() error: ", err)
+	}
 	wg.Done()
 }
 
-func runBucketsClear(list <-chan pagedObject, thread_num int, stats *Stats) {
+func runBucketsClear(list <-chan pagedObject, threadNum int, stats *Stats) {
 	svc := s3.New(session.New(), cfg)
 
 	for {
 		v := <-list
 		start := time.Now().UnixNano()
 		_, err := svc.DeleteObject(&s3.DeleteObjectInput{
-			Bucket: &buckets[v.bucket_num],
-			Key: &v.key,
+			Bucket: &buckets[v.bucketNum],
+			Key:    &v.key,
 		})
 		end := time.Now().UnixNano()
-		stats.updateIntervals(thread_num)
+		stats.updateIntervals(threadNum)
 		if err != nil {
 			break
 		}
-		stats.addOp(thread_num, v.size, end-start)
+		stats.addOp(threadNum, v.size, end-start)
 	}
-	stats.finish(thread_num)
-	atomic.AddInt64(&running_threads, -1)
+	stats.finish(threadNum)
+	atomic.AddInt64(&runningThreads, -1)
 }
 
 func runWrapper(loop int, r rune) []OutputStats {
-	op_counter = first_object-1
-	running_threads = int64(threads)
+	opCounter = firstObject - 1
+	runningThreads = int64(threads)
 	intervalNano := int64(interval * 1000000000)
-	endtime = time.Now().Add(time.Second * time.Duration(duration_secs))
+	endtime = time.Now().Add(time.Second * time.Duration(durationSecs))
 	var stats Stats
 
 	// If we perviously set the object count after running a put
 	// test, set the object count back to -1 for the new put test.
-	if r == 'p' && object_count_flag {
-		object_count = -1
-		object_count_flag = false
+	if r == 'p' && objectCountFlag {
+		objectCount = -1
+		objectCountFlag = false
 	}
 
 	switch r {
@@ -793,7 +705,7 @@ func runWrapper(loop int, r rune) []OutputStats {
 		stats = makeStats(loop, "BCLR", threads, intervalNano)
 		list := make(chan pagedObject, threads*2)
 		var wg = sync.WaitGroup{}
-		for b := int64(0); b < bucket_count; b++ {
+		for b := int64(0); b < bucketCount; b++ {
 			wg.Add(1)
 			go runPagedList(&wg, b, list)
 		}
@@ -841,15 +753,15 @@ func runWrapper(loop int, r rune) []OutputStats {
 	}
 
 	// Wait for it to finish
-	for atomic.LoadInt64(&running_threads) > 0 {
+	for atomic.LoadInt64(&runningThreads) > 0 {
 		time.Sleep(time.Millisecond)
 	}
 
-	// If the user didn't set the object_count, we can set it here
+	// If the user didn't set the objectCount, we can set it here
 	// to limit subsequent get/del tests to valid objects only.
-	if r == 'p' && object_count < 0 {
-		object_count = op_counter + 1
-		object_count_flag = true
+	if r == 'p' && objectCount < 0 {
+		objectCount = opCounter + 1
+		objectCountFlag = true
 	}
 
 	// Create the Output Stats
@@ -868,40 +780,39 @@ func runWrapper(loop int, r rune) []OutputStats {
 	return os
 }
 
-func init() {
+func initParameters() {
 	// Parse command line
 	myflag := flag.NewFlagSet("myflag", flag.ExitOnError)
-	myflag.StringVar(&access_key, "a", os.Getenv("AWS_ACCESS_KEY_ID"), "Access key")
-	myflag.StringVar(&secret_key, "s", os.Getenv("AWS_SECRET_ACCESS_KEY"), "Secret key")
-	myflag.StringVar(&url_host, "u", os.Getenv("AWS_HOST"), "URL for host with method prefix")
-	myflag.StringVar(&object_prefix, "op", "", "Prefix for objects")
-	myflag.StringVar(&bucket_prefix, "bp", "hotsauce-bench", "Prefix for buckets")
-	myflag.StringVar(&bucket_list, "bl", "", "Use space-separated list of buckets for testing, not <prefix>000000000000")
+	myflag.StringVar(&accessKey, "a", os.Getenv("AWS_ACCESS_KEY_ID"), "Access key")
+	myflag.StringVar(&secretSey, "s", os.Getenv("AWS_SECRET_ACCESS_KEY"), "Secret key")
+	myflag.StringVar(&urlHost, "u", os.Getenv("AWS_HOST"), "URL for host with method prefix")
+	myflag.StringVar(&objectPrefix, "op", "", "Prefix for objects")
+	myflag.StringVar(&bucketPrefix, "bp", "hotsauce-bench", "Prefix for buckets")
+	myflag.StringVar(&bucketList, "bl", "", "Use space-separated list of buckets for testing, not <prefix>000000000000")
 	myflag.StringVar(&region, "r", "us-east-1", "Region for testing")
-	myflag.StringVar(&modes, "m", "cxiplgdcx", "Run modes in order.  See NOTES for more info")
+	myflag.StringVar(&modes, "m", modeString, "Run modes in order.  See NOTES for more info")
 	myflag.StringVar(&output, "o", "", "Write CSV output to this file")
-	myflag.StringVar(&json_output, "j", "", "Write JSON output to this file")
-	myflag.Int64Var(&max_keys, "mk", 1000, "Maximum number of keys to retreive at once for bucket listings")
-	myflag.Int64Var(&object_count, "n", -1, "Maximum number of objects <-1 for unlimited>")
-	myflag.Int64Var(&first_object, "f", 0, "Object number to start with")
-	myflag.Int64Var(&bucket_count, "b", 1, "Number of buckets to distribute IOs across")
-	myflag.IntVar(&duration_secs, "d", 60, "Maximum test duration in seconds <-1 for unlimited>")
+	myflag.StringVar(&jsonOutput, "j", "", "Write JSON output to this file")
+	myflag.Int64Var(&maxKeys, "mk", 1000, "Maximum number of keys to retreive at once for bucket listings")
+	myflag.Int64Var(&objectCount, "n", -1, "Maximum number of objects <-1 for unlimited>")
+	myflag.Int64Var(&firstObject, "f", 0, "Object number to start with")
+	myflag.Int64Var(&bucketCount, "b", 1, "Number of buckets to distribute IOs across")
+	myflag.IntVar(&durationSecs, "d", 60, "Maximum test duration in seconds <-1 for unlimited>")
 	myflag.IntVar(&threads, "t", 1, "Number of threads to run")
 	myflag.IntVar(&loops, "l", 1, "Number of times to repeat test")
 	myflag.StringVar(&sizeArg, "z", "1M", "Size of objects in bytes with postfix K, M, and G")
 	myflag.Float64Var(&interval, "ri", 1.0, "Number of seconds between report intervals")
 	// define custom usage output with notes
-	notes :=
-		`
+	notes := `
 NOTES:
   - Valid mode types for the -m mode string are:
     c: clear all existing objects from buckets (requires lookups)
     x: delete buckets
-    i: initialize buckets 
+    i: initialize buckets
     p: put objects in buckets
     l: list objects in buckets
     g: get objects from buckets (randomly when object count is known, sequentially otherwise)
-    d: delete objects from buckets 
+    d: delete objects from buckets
 
     These modes are processed in-order and can be repeated, ie "ippgd" will
     initialize the buckets, put the objects, reput the objects, get the
@@ -910,14 +821,14 @@ NOTES:
 
   - When performing bucket listings, many S3 storage systems limit the
     maximum number of keys returned to 1000 even if MaxKeys is set higher.
-    hsbench will attempt to set MaxKeys to whatever value is passed via the 
+    hsbench will attempt to set MaxKeys to whatever value is passed via the
     "mk" flag, but it's likely that any values above 1000 will be ignored.
 `
 	myflag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "\nUSAGE: %s [OPTIONS]\n\n", os.Args[0])
-		fmt.Fprintf(flag.CommandLine.Output(), "OPTIONS:\n")
+		fmt.Fprintln(flag.CommandLine.Output(), "\nUSAGE:", os.Args[0], "[OPTIONS]\n")
+		fmt.Fprintln(flag.CommandLine.Output(), "OPTIONS:")
 		myflag.PrintDefaults()
-		fmt.Fprintf(flag.CommandLine.Output(), notes)
+		fmt.Fprint(flag.CommandLine.Output(), notes)
 	}
 
 	if err := myflag.Parse(os.Args[1:]); err != nil {
@@ -925,59 +836,52 @@ NOTES:
 	}
 
 	// Check the arguments
-	if object_count < 0 && duration_secs < 0 {
-		log.Fatal("The number of objects and duration can not both be unlimited")
+	if objectCount < 0 && durationSecs < 0 {
+		log.Fatalln("The number of objects and duration can not both be unlimited")
 	}
-	if access_key == "" {
-		log.Fatal("Missing argument -a for access key.")
+	if urlHost == "" {
+		log.Fatalln("Missing argument -u for host endpoint")
 	}
-	if secret_key == "" {
-		log.Fatal("Missing argument -s for secret key.")
-	}
-	if url_host == "" {
-		log.Fatal("Missing argument -u for host endpoint.")
-	}
-	invalid_mode := false
+	invalidMode := false
 	for _, r := range modes {
-		if r != 'i' &&
-			r != 'c' &&
-			r != 'p' &&
-			r != 'g' &&
-			r != 'l' &&
-			r != 'd' &&
-			r != 'x' {
-			s := fmt.Sprintf("Invalid mode '%s' passed to -m", string(r))
-			log.Printf(s)
-			invalid_mode = true
+		if !strings.ContainsRune(modeString, r) {
+			log.Printf("Invalid mode '%c' passed to -m", r)
+			invalidMode = true
 		}
 	}
-	if invalid_mode {
-		log.Fatal("Invalid modes passed to -m, see help for details.")
+	if invalidMode {
+		log.Fatalln("Invalid modes passed to -m, see help for details")
 	}
 	var err error
 	var size uint64
 	if size, err = bytefmt.ToBytes(sizeArg); err != nil {
-		log.Fatalf("Invalid -z argument for object size: %v", err)
+		log.Fatalln("Invalid -z argument for object size:", err)
 	}
-	object_size = int64(size)
+	objectSize = int64(size)
 }
 
 func initData() {
 	// Initialize data for the bucket
-	object_data = make([]byte, object_size)
-	rand.Read(object_data)
+	objectData = make([]byte, objectSize)
+	rand.Read(objectData)
 	hasher := md5.New()
-	hasher.Write(object_data)
-	object_data_md5 = base64.StdEncoding.EncodeToString(hasher.Sum(nil))
+	hasher.Write(objectData)
+	objectDataMd5 = base64.StdEncoding.EncodeToString(hasher.Sum(nil))
 }
 
 func main() {
 	// Hello
-	log.Printf("Hotsauce S3 Benchmark Version 0.1")
+	log.Print("Hotsauce S3 Benchmark Version ", version)
+	initParameters()
+
+	var creds *credentials.Credentials
+	if accessKey != "" && secretSey != "" {
+		creds = credentials.NewStaticCredentials(accessKey, secretSey, "")
+	}
 
 	cfg = &aws.Config{
-		Endpoint:    aws.String(url_host),
-		Credentials: credentials.NewStaticCredentials(access_key, secret_key, ""),
+		Endpoint:    aws.String(urlHost),
+		Credentials: creds,
 		Region:      aws.String(region),
 		// DisableParamValidation:  aws.Bool(true),
 		DisableComputeChecksums: aws.Bool(true),
@@ -985,23 +889,23 @@ func main() {
 	}
 
 	// Echo the parameters
-	log.Printf("Parameters:")
-	log.Printf("url=%s", url_host)
-	log.Printf("object_prefix=%s", object_prefix)
-	if bucket_list != "" {
-		log.Printf("bucket_list=%s", bucket_list)
+	log.Print("Parameters:")
+	log.Printf("url=%s", urlHost)
+	log.Printf("object_prefix=%s", objectPrefix)
+	if bucketList != "" {
+		log.Printf("bucket_list=%s", bucketList)
 	} else {
-		log.Printf("bucket_prefix=%s", bucket_prefix)
+		log.Printf("bucket_prefix=%s", bucketPrefix)
 	}
 	log.Printf("region=%s", region)
 	log.Printf("modes=%s", modes)
 	log.Printf("output=%s", output)
-	log.Printf("json_output=%s", json_output)
-	log.Printf("max_keys=%d", max_keys)
-	log.Printf("object_count=%d", object_count)
-	log.Printf("first_object=%d", first_object)
-	log.Printf("bucket_count=%d", bucket_count)
-	log.Printf("duration=%d", duration_secs)
+	log.Printf("json_output=%s", jsonOutput)
+	log.Printf("max_keys=%d", maxKeys)
+	log.Printf("object_count=%d", objectCount)
+	log.Printf("first_object=%d", firstObject)
+	log.Printf("bucket_count=%d", bucketCount)
+	log.Printf("duration=%d", durationSecs)
 	log.Printf("threads=%d", threads)
 	log.Printf("loops=%d", loops)
 	log.Printf("size=%s", sizeArg)
@@ -1011,12 +915,12 @@ func main() {
 	initData()
 
 	// Setup the slice of buckets
-	if bucket_list == "" {
-		for i := int64(0); i < bucket_count; i++ {
-			buckets = append(buckets, fmt.Sprintf("%s%012d", bucket_prefix, i))
+	if bucketList == "" {
+		for i := int64(0); i < bucketCount; i++ {
+			buckets = append(buckets, fmt.Sprintf("%s%012d", bucketPrefix, i))
 		}
 	} else {
-		buckets = strings.Split(bucket_list, " ")
+		buckets = strings.Split(bucketList, " ")
 	}
 
 	// Loop running the tests
@@ -1030,36 +934,41 @@ func main() {
 	// Write CSV Output
 	if output != "" {
 		file, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY, 0777)
-		defer file.Close()
 		if err != nil {
-			log.Fatal("Could not open CSV file for writing.")
-		} else {
-			csvWriter := csv.NewWriter(file)
-			for i, o := range oStats {
-				if i == 0 {
-					o.csv_header(csvWriter)
-				}
-				o.csv(csvWriter)
-			}
-			csvWriter.Flush()
+			log.Fatalln("Could not open CSV file for writing")
 		}
+		defer file.Close()
+
+		csvWriter := csv.NewWriter(file)
+		for i, o := range oStats {
+			if i == 0 {
+				o.csvHeader(csvWriter)
+			}
+			o.csv(csvWriter)
+		}
+		csvWriter.Flush()
 	}
 
 	// Write JSON output
-	if json_output != "" {
-		file, err := os.OpenFile(json_output, os.O_CREATE|os.O_WRONLY, 0777)
-		defer file.Close()
+	if jsonOutput != "" {
+		file, err := os.OpenFile(jsonOutput, os.O_CREATE|os.O_WRONLY, 0777)
 		if err != nil {
-			log.Fatal("Could not open JSON file for writing.")
+			log.Fatalln("Could not open JSON file for writing")
 		}
+		defer file.Close()
 		data, err := json.Marshal(oStats)
 		if err != nil {
-			log.Fatal("Error marshaling JSON: ", err)
+			log.Fatalln("Error marshaling JSON:", err)
 		}
 		_, err = file.Write(data)
 		if err != nil {
-			log.Fatal("Error writing to JSON file: ", err)
+			log.Fatalln("Error writing to JSON file:", err)
 		}
-		file.Sync()
+
+		err = file.Sync()
+		if err != nil {
+			log.Print("file.Sync() error: ", err)
+
+		}
 	}
 }
