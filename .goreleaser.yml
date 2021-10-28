@@ -1,6 +1,6 @@
 ---
 # https://goreleaser.com/customization/project/
-project_name: s3-benchmark
+project_name: hsbench
 
 # https://goreleaser.com/customization/hooks/
 before:
