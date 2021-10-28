@@ -76,10 +76,10 @@ release:
 
 # https://goreleaser.com/customization/nfpm/
 nfpms:
-  - homepage: https://github.com/amilevskiy/s3-benchmark
+  - homepage: https://github.com/amilevskiy/hsbench
     maintainer: <amilevskiy@provectus.com>
     description: S3 benchmark tool
-    license: MIT License
+    license: GPL-3.0 License
     bindir: /usr/bin
     formats:
       - deb
