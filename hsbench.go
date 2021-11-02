@@ -802,6 +802,8 @@ func initParameters() {
 	myflag.IntVar(&loops, "l", 1, "Number of times to repeat test")
 	myflag.StringVar(&sizeArg, "z", "1M", "Size of objects in bytes with postfix K, M, and G")
 	myflag.Float64Var(&interval, "ri", 1.0, "Number of seconds between report intervals")
+	myflag.SetOutput(os.Stdout)
+
 	// define custom usage output with notes
 	notes := `
 NOTES:
